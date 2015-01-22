@@ -1,0 +1,146 @@
+
+# Practical Machine Learning - Barbell Lift Form Data
+
+Dataset information is available here:  http://groupware.les.inf.puc-rio.br/har#dataset
+
+Participants were asked to lift a barbell in one of five ways:
+
+* Class A: Perfect form
+* Class B: Throwing elbows to the front
+* Class C: Lifting the dumbbell only halfway
+* Class D: Lowering the dumbbell only halfway
+* Class E: Throwing the hips forward
+
+These categories are included in the *classe* variable. Each participant had several sensors attached to his or her body, producing quite a large number of predictor variables. The goal of this project is to use these predictor variables to determine the class of lift. 
+
+We begin by reading in the training and test sets. The training set
+
+
+```{r cache=TRUE}
+#library(knitr)
+library(caret)
+library(ggplot2)
+
+orig_train <- read.csv('pml-training.csv', header=TRUE, na.strings = c("", " ", "#DIV/0!", "NA"))
+orig_test <- read.csv('pml-testing.csv', header=TRUE, na.strings = c("", " ", "#DIV/0!", "NA"))
+```
+
+Next we will split the training set into training and testing subsets. We will use this new test set to cross-validate and get an estimate of how well our model is doing.
+
+
+```{r cache=TRUE}
+
+set.seed(22012015)
+inTrain <- createDataPartition(y=orig_train$classe, p=0.6, list=FALSE)
+
+training <- orig_train[inTrain,]
+testing <- orig_train[-inTrain,]
+```
+
+## Data Processing
+
+We have a very large number of variables here. Let's start by checking how many NA values are under each variable.
+
+
+```{r}
+allVars <- names(training[8:153])
+
+countNA <- sapply(1:length(allVars), function(x) sum(is.na(training[allVars[x]])))
+names(countNA) <- allVars
+
+head(countNA)
+```
+
+We can see that some of the variables have complete data, and others have almost no data. We will take out the variables that do not have enough data to be useful.
+
+```{r}
+cleanVars <- c(allVars[countNA == 0], "classe")
+trainClean <- training[cleanVars]
+```
+
+
+## Decision Tree
+
+The first method that we will try is a decision tree. We can use the *caret* package to fit this model. 
+
+
+```{r cache=TRUE}
+treeFit <- train(classe~., method="rpart", data=trainClean)
+print(treeFit$finalModel)
+prediction <- predict(treeFit, newdata=testing)
+```
+
+A confusion matrix will let us know how accurate our predictions were on the testing sub-set.
+
+```{r warning=FALSE}
+library(mda)
+confusion(prediction, testing$classe)
+```
+ 
+We get about 50.8% accuracy here, and element D is not represented in our predictions at all. We should try another method.
+ 
+```{r fig.width=5, fig.height=4, warning=FALSE}
+library(rattle)
+fancyRpartPlot(treeFit$finalModel)
+```
+
+## Random Forest
+
+A random forest is a large collection of decision trees, and is usually much more accurate than a single tree. We will use *randomForest* instead of *train()* as it is more efficient
+
+```{r cache=TRUE}
+library(randomForest)
+forestFit <- randomForest(classe~., data=trainClean, importance=TRUE, ntree=5)
+forestFit
+
+prediction2 <- predict(forestFit, newdata=testing)
+
+```
+
+### Out of Sample Error and Importance
+
+```{r}
+confusion(prediction2, testing$classe)
+```
+
+After producing a confusion matrix, we conclude that the out of sample error should be about 2.55\% with this random forest method.
+
+One downside to random forests is that they are a bit harder to interpret than a single tree. However, we are still able to determine the importance of each predictor. In the table below, you can see that the belt sensors dominate the top few positions, and are therefore do the most to differentiate between classes. 
+
+```{r}
+head(importance(forestFit), n=5)
+```
+
+If we look at a box and whiskers plot of the most important variable, *roll_belt*, it is not easy to see a big difference between the variables. However, if we plot the top two variables together, we can see several areas of the plot where there is a clear separation between classes. For example, participants with a high *roll_belt* value are exclusively class E.
+
+
+```{r fig.width=5, fig.height=4}
+ggplot(trainClean, aes(x=classe, y = roll_belt))  + stat_boxplot(geom ='errorbar') + geom_boxplot() 
+
+with(trainClean, qplot(roll_belt, pitch_belt, col=classe, main='Pitch of Belt v. Roll of Belt') + geom_point(alpha = 1/10)) 
+```
+
+## Random Forest on Test Set
+
+Finally, we should use a random forest to predict the test set.
+
+```{r}
+predictionFinal <- predict(forestFit, newdata=orig_test)
+predictionFinal
+
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(as.character(predictionFinal))
+
+
+```
+
+On the final test set, this method got a score of 18/20.
+
